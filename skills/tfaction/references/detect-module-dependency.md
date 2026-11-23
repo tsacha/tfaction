@@ -31,10 +31,22 @@ update_local_path_module_caller:
 
 Internally, tfaction uses [terraform-config-inspect](https://github.com/hashicorp/terraform-config-inspect) to analyze dependencies.
 
+If `terraform_command` in `tfaction-root.yaml` is `tofu` and `tofu version -json` reports OpenTofu 1.11.0 or later, tfaction runs [`tofu show -module=<working directory> -json`](https://opentofu.org/docs/cli/commands/show/) instead.
+It needs neither Go nor `tofu init`, and it reads `.tofu` files, which terraform-config-inspect ignores.
+`tofu` runs in the git root directory, so all working directories are read by the same `tofu` (for example, the version pinned in the root `aqua.yaml`).
+If `tofu version -json` fails or reports an older version, tfaction falls back to terraform-config-inspect and logs why.
+Only the root `terraform_command` is checked: `terraform_command` in `target_groups` and `tfaction.yaml` doesn't change the tool.
+
+```yaml title="tfaction-root.yaml"
+terraform_command: tofu
+update_local_path_module_caller:
+  enabled: true
+```
+
 While this feature is relatively popular, it has some drawbacks:
 
 1. It is time-consuming
-   1. `terraform-config-inspect` needs to be built from source
+   1. `terraform-config-inspect` needs to be built from source (unless `tofu show -module` is used)
    2. It must be run for every root module, so execution time scales linearly with the number of root modules
 1. All dependent root modules run `plan` and `apply` simultaneously
    1. You cannot apply to a dev environment before production, for example

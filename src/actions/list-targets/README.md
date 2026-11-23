@@ -98,7 +98,7 @@ with:
 - In case of PR event, validate if the current commit is latest
 - List all working directories and modules by searching files `tfaction.yaml` and `tfaction_module.yaml`
 - If `.update_local_path_module_caller?.enabled` is true, adding working directories where dependent modules are changed to the output `targets`
-  - Run `terragrunt render --json` and `terraform-config-inspect`
+  - Run `terragrunt render --json` and `terraform-config-inspect` (or `tofu show -module` with OpenTofu 1.11.0 or later)
 - Create pairs of working directory and target based on all working directories, `target_groups`, and `replace_target`
 - Merge config of the global config, `target_groups`, and `tfaction.yaml` for each working directory
 - Handle PR labels (tfmigrate and skip labels)
@@ -108,7 +108,7 @@ with:
 
 ## list module caller
 
-list-module-caller detects dependent modules by `terragrunt` and `terraform-config-inspect`.
+list-module-caller detects dependent modules by `terragrunt` and `terraform-config-inspect` or `tofu show -module`.
 It creates pairs of working directories and dependent modules.
 
 ```yaml
@@ -164,3 +164,23 @@ It outputs a JSON string.
 ```
 
 `.module_calls.*.source` is a relative path from the working directory to module.
+
+### tofu show -module
+
+If the root `terraform_command` is `tofu` and `tofu version -json` returns 1.11.0 or later, list-module-caller runs `tofu show -module=<working directory> -json` in the git root directory instead of terraform-config-inspect.
+OpenTofu prints the module calls under `.root_module`, and omits `module_calls` when the working directory calls no module.
+
+```json
+{
+  "format_version": "1.0",
+  "root_module": {
+    "module_calls": {
+      "foo": {
+        "source": "../modules/foo"
+      }
+    }
+  }
+}
+```
+
+If `tofu version -json` fails or returns an older version, list-module-caller uses terraform-config-inspect.

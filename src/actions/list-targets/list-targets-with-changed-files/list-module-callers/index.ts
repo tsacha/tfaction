@@ -8,8 +8,9 @@ import * as aqua from "../../../../aqua";
  * List module callers in the git repository.
  * @param gitRootDir - Absolute path to the git root directory
  * @param configFiles - Relative file paths from git_root_dir to config files
- * @param githubToken - GitHub token used to post a PR comment when `terraform-config-inspect` fails
+ * @param githubToken - GitHub token used to post a PR comment when the inspection fails
  * @param executor
+ * @param terraformCommand - terraform_command of tfaction-root.yaml
  * @returns Relative path to module from git_root_dir => Relative paths from git_root_dir to module callers
  */
 export const list = async (
@@ -18,6 +19,7 @@ export const list = async (
   configFiles: string[],
   githubToken: string,
   executor: aqua.Executor,
+  terraformCommand: string = "terraform",
 ): Promise<ModuleToCallers> => {
   const rawModuleCalls: ModuleCalls = {};
 
@@ -89,6 +91,8 @@ export const list = async (
     }
   }
 
+  const inspector = await getInspector(gitRootDir, terraformCommand, executor);
+
   for (const tfFile of configFiles) {
     if (tfFile == "") {
       continue;
@@ -100,11 +104,11 @@ export const list = async (
     const absTfDir = path.join(gitRootDir, tfDir);
 
     const outInspect = await executor.getExecOutput(
-      "terraform-config-inspect",
-      ["--json"],
+      inspector.command,
+      inspector.args,
       {
         cwd: absTfDir,
-        group: "terraform-config-inspect",
+        group: inspector.command,
         comment: {
           token: githubToken,
           key: "terraform-config-inspect",
@@ -112,11 +116,10 @@ export const list = async (
         },
       },
     );
-    const inspection = JSON.parse(outInspect.stdout);
 
     /** List of relative paths from git_root_dir to modules */
     const arr = Object.values(
-      inspection["module_calls"] as Record<string, { source: string }>,
+      getModuleCalls(inspector, outInspect.stdout),
     ).flatMap((module) => {
       const source = module.source;
       if (
@@ -193,4 +196,71 @@ export const buildModuleToCallers = (
     moduleToCallers[module].push(...findCallers(moduleCalls, module));
   }
   return moduleToCallers;
+};
+
+/**
+ * A command printing the module calls of the directory it runs in as JSON.
+ */
+export type Inspector = {
+  command: string;
+  args: string[];
+  /** `tofu show -module` nests module_calls under root_module */
+  tofu: boolean;
+};
+
+const terraformConfigInspect: Inspector = {
+  command: "terraform-config-inspect",
+  args: ["--json"],
+  tofu: false,
+};
+
+/**
+ * OpenTofu >= 1.11 prints the configuration of a directory without
+ * `tofu init` (`tofu show -module=DIR -json`), with OpenTofu's own parser,
+ * `.tofu` files included.
+ * @param versionJSON - stdout of `tofu version -json`
+ */
+export const supportsShowModule = (versionJSON: string): boolean => {
+  const version = semver.coerce(JSON.parse(versionJSON).terraform_version);
+  return version !== null && semver.gte(version, "1.11.0");
+};
+
+const getInspector = async (
+  gitRootDir: string,
+  terraformCommand: string,
+  executor: aqua.Executor,
+): Promise<Inspector> => {
+  if (path.basename(terraformCommand) !== "tofu") {
+    return terraformConfigInspect;
+  }
+  const out = await executor.getExecOutput(
+    terraformCommand,
+    ["version", "-json"],
+    { cwd: gitRootDir, silent: true, ignoreReturnCode: true },
+  );
+  if (out.exitCode !== 0 || !supportsShowModule(out.stdout)) {
+    return terraformConfigInspect;
+  }
+  return {
+    command: terraformCommand,
+    args: ["show", "-module=.", "-json"],
+    tofu: true,
+  };
+};
+
+/**
+ * @param stdout - stdout of the inspector
+ * @returns module name => module call
+ */
+export const getModuleCalls = (
+  inspector: Inspector,
+  stdout: string,
+): Record<string, { source: string }> => {
+  const inspection = JSON.parse(stdout);
+  // tofu show omits module_calls when the directory calls no module
+  return (
+    (inspector.tofu
+      ? inspection.root_module?.module_calls
+      : inspection.module_calls) ?? {}
+  );
 };

@@ -1,4 +1,4 @@
-import { buildModuleToCallers } from "./";
+import { buildModuleToCallers, getModuleCalls, supportsShowModule } from "./";
 import { expect, describe, it } from "vitest";
 
 describe("buildModuleToCallers", () => {
@@ -156,5 +156,66 @@ describe("buildModuleToCallers", () => {
       "modules/vpc": ["terraform/aws/dev", "terraform/aws/prod"],
       "modules/network": ["terraform/gcp/dev"],
     });
+  });
+});
+
+describe("supportsShowModule", () => {
+  it.each([
+    ["1.10.7", false],
+    ["1.11.0", true],
+    ["1.12.6", true],
+    ["2.0.0", true],
+  ])("tofu %s => %s", (version, expected) => {
+    expect(
+      supportsShowModule(
+        JSON.stringify({ terraform_version: version, platform: "linux_amd64" }),
+      ),
+    ).toBe(expected);
+  });
+});
+
+describe("getModuleCalls", () => {
+  const tci = {
+    command: "terraform-config-inspect",
+    args: ["--json"],
+    tofu: false,
+  };
+  const tofu = {
+    command: "tofu",
+    args: ["show", "-module=.", "-json"],
+    tofu: true,
+  };
+
+  it("reads module_calls of terraform-config-inspect", () => {
+    expect(
+      getModuleCalls(
+        tci,
+        JSON.stringify({ module_calls: { vpc: { source: "../modules/vpc" } } }),
+      ),
+    ).toEqual({ vpc: { source: "../modules/vpc" } });
+  });
+
+  it("reads root_module.module_calls of tofu show -module", () => {
+    expect(
+      getModuleCalls(
+        tofu,
+        JSON.stringify({
+          format_version: "1.0",
+          root_module: { module_calls: { vpc: { source: "../modules/vpc" } } },
+        }),
+      ),
+    ).toEqual({ vpc: { source: "../modules/vpc" } });
+  });
+
+  it("returns no module call when tofu show omits module_calls", () => {
+    expect(
+      getModuleCalls(
+        tofu,
+        JSON.stringify({
+          format_version: "1.0",
+          root_module: { resources: [] },
+        }),
+      ),
+    ).toEqual({});
   });
 });

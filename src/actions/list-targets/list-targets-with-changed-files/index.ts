@@ -532,6 +532,7 @@ export const main = async (executor: aqua.Executor, pr: ciInfo.Result) => {
       configFiles,
       githubToken,
       executor,
+      cfg.terraform_command,
     );
   }
 

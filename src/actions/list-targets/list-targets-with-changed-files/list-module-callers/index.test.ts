@@ -1,5 +1,16 @@
-import { buildModuleToCallers, getModuleCalls, supportsShowModule } from "./";
-import { expect, describe, it } from "vitest";
+import {
+  buildInspectCommand,
+  buildModuleToCallers,
+  getInspector,
+  getModuleCalls,
+  supportsShowModule,
+} from "./";
+import type * as aqua from "../../../../aqua";
+import { expect, describe, it, vi } from "vitest";
+
+vi.mock("@actions/core", () => ({
+  info: vi.fn(),
+}));
 
 describe("buildModuleToCallers", () => {
   // Input (moduleCalls):
@@ -163,6 +174,7 @@ describe("supportsShowModule", () => {
   it.each([
     ["1.10.7", false],
     ["1.11.0", true],
+    ["1.11.0-beta1", true],
     ["1.12.6", true],
     ["2.0.0", true],
   ])("tofu %s => %s", (version, expected) => {
@@ -172,20 +184,91 @@ describe("supportsShowModule", () => {
       ),
     ).toBe(expected);
   });
+
+  it("returns false if the output isn't JSON", () => {
+    expect(supportsShowModule("OpenTofu v1.11.0")).toBe(false);
+  });
+});
+
+describe("getInspector", () => {
+  const createMockExecutor = (result: { exitCode: number; stdout: string }) =>
+    ({
+      getExecOutput: vi.fn().mockResolvedValue({ ...result, stderr: "" }),
+    }) as unknown as aqua.Executor & {
+      getExecOutput: ReturnType<typeof vi.fn>;
+    };
+  const version = (v: string) =>
+    JSON.stringify({ terraform_version: v, platform: "linux_amd64" });
+
+  it("uses terraform-config-inspect without running terraform", async () => {
+    const executor = createMockExecutor({ exitCode: 0, stdout: "" });
+    expect(await getInspector("/repo", "terraform", executor)).toEqual({
+      command: "terraform-config-inspect",
+      tofu: false,
+    });
+    expect(executor.getExecOutput).not.toHaveBeenCalled();
+  });
+
+  it.each(["tofu", "/usr/local/bin/tofu", "tofu.exe"])(
+    "uses %s show -module with OpenTofu 1.11",
+    async (command) => {
+      const executor = createMockExecutor({
+        exitCode: 0,
+        stdout: version("1.11.0"),
+      });
+      expect(await getInspector("/repo", command, executor)).toEqual({
+        command,
+        tofu: true,
+      });
+      expect(executor.getExecOutput).toHaveBeenCalledWith(
+        command,
+        ["version", "-json"],
+        expect.objectContaining({ cwd: "/repo", ignoreReturnCode: true }),
+      );
+    },
+  );
+
+  it("uses terraform-config-inspect with OpenTofu 1.10", async () => {
+    const executor = createMockExecutor({
+      exitCode: 0,
+      stdout: version("1.10.7"),
+    });
+    expect(await getInspector("/repo", "tofu", executor)).toEqual({
+      command: "terraform-config-inspect",
+      tofu: false,
+    });
+  });
+
+  it("uses terraform-config-inspect if tofu version fails", async () => {
+    const executor = createMockExecutor({ exitCode: 1, stdout: "" });
+    expect(await getInspector("/repo", "tofu", executor)).toEqual({
+      command: "terraform-config-inspect",
+      tofu: false,
+    });
+  });
+});
+
+describe("buildInspectCommand", () => {
+  it("runs terraform-config-inspect in the working directory", () => {
+    expect(
+      buildInspectCommand(
+        { command: "terraform-config-inspect", tofu: false },
+        "/repo",
+        "aws/foo",
+      ),
+    ).toEqual({ args: ["--json"], cwd: "/repo/aws/foo" });
+  });
+
+  it("runs tofu show -module in the git root directory", () => {
+    expect(
+      buildInspectCommand({ command: "tofu", tofu: true }, "/repo", "aws/foo"),
+    ).toEqual({ args: ["show", "-module=aws/foo", "-json"], cwd: "/repo" });
+  });
 });
 
 describe("getModuleCalls", () => {
-  const tci = {
-    command: "terraform-config-inspect",
-    args: ["--json"],
-    tofu: false,
-  };
-  const tofu = {
-    command: "tofu",
-    args: ["show", "-module=.", "-json"],
-    tofu: true,
-  };
-
+  const tci = { command: "terraform-config-inspect", tofu: false };
+  const tofu = { command: "tofu", tofu: true };
   it("reads module_calls of terraform-config-inspect", () => {
     expect(
       getModuleCalls(

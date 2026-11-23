@@ -1,3 +1,4 @@
+import * as core from "@actions/core";
 import * as fs from "fs";
 import * as path from "path";
 import * as tmp from "tmp";
@@ -100,22 +101,17 @@ export const list = async (
 
     /** a relative path from git_root_dir to module caller */
     const tfDir = path.dirname(tfFile);
-    /** absolute path to working directory */
-    const absTfDir = path.join(gitRootDir, tfDir);
+    const { args, cwd } = buildInspectCommand(inspector, gitRootDir, tfDir);
 
-    const outInspect = await executor.getExecOutput(
-      inspector.command,
-      inspector.args,
-      {
-        cwd: absTfDir,
-        group: inspector.command,
-        comment: {
-          token: githubToken,
-          key: "terraform-config-inspect",
-          vars: { tfaction_target: tfDir },
-        },
+    const outInspect = await executor.getExecOutput(inspector.command, args, {
+      cwd,
+      group: [inspector.command, ...args].join(" "),
+      comment: {
+        token: githubToken,
+        key: "terraform-config-inspect",
+        vars: { tfaction_target: tfDir },
       },
-    );
+    });
 
     /** List of relative paths from git_root_dir to modules */
     const arr = Object.values(
@@ -199,18 +195,16 @@ export const buildModuleToCallers = (
 };
 
 /**
- * A command printing the module calls of the directory it runs in as JSON.
+ * A command printing the module calls of a directory as JSON.
  */
 export type Inspector = {
   command: string;
-  args: string[];
-  /** `tofu show -module` nests module_calls under root_module */
+  /** `tofu show -module` instead of terraform-config-inspect */
   tofu: boolean;
 };
 
 const terraformConfigInspect: Inspector = {
   command: "terraform-config-inspect",
-  args: ["--json"],
   tofu: false,
 };
 
@@ -221,16 +215,25 @@ const terraformConfigInspect: Inspector = {
  * @param versionJSON - stdout of `tofu version -json`
  */
 export const supportsShowModule = (versionJSON: string): boolean => {
-  const version = semver.coerce(JSON.parse(versionJSON).terraform_version);
+  let version: semver.SemVer | null;
+  try {
+    version = semver.coerce(JSON.parse(versionJSON).terraform_version);
+  } catch {
+    return false;
+  }
   return version !== null && semver.gte(version, "1.11.0");
 };
 
-const getInspector = async (
+/**
+ * Use `tofu show -module` if terraform_command is tofu and supports it,
+ * otherwise terraform-config-inspect.
+ */
+export const getInspector = async (
   gitRootDir: string,
   terraformCommand: string,
   executor: aqua.Executor,
 ): Promise<Inspector> => {
-  if (path.basename(terraformCommand) !== "tofu") {
+  if (path.parse(terraformCommand).name !== "tofu") {
     return terraformConfigInspect;
   }
   const out = await executor.getExecOutput(
@@ -238,14 +241,38 @@ const getInspector = async (
     ["version", "-json"],
     { cwd: gitRootDir, silent: true, ignoreReturnCode: true },
   );
-  if (out.exitCode !== 0 || !supportsShowModule(out.stdout)) {
+  if (out.exitCode !== 0) {
+    core.info(
+      `\`${terraformCommand} version -json\` failed, so module dependencies are resolved with terraform-config-inspect`,
+    );
     return terraformConfigInspect;
   }
-  return {
-    command: terraformCommand,
-    args: ["show", "-module=.", "-json"],
-    tofu: true,
-  };
+  if (!supportsShowModule(out.stdout)) {
+    core.info(
+      "`tofu show -module` requires OpenTofu 1.11.0 or later, so module dependencies are resolved with terraform-config-inspect",
+    );
+    return terraformConfigInspect;
+  }
+  core.info(
+    `Module dependencies are resolved with \`${terraformCommand} show -module\``,
+  );
+  return { command: terraformCommand, tofu: true };
+};
+
+/**
+ * @param tfDir - Relative path from git_root_dir to the working directory
+ */
+export const buildInspectCommand = (
+  inspector: Inspector,
+  gitRootDir: string,
+  tfDir: string,
+): { args: string[]; cwd: string } => {
+  if (inspector.tofu) {
+    // Run in git_root_dir so that every directory is read by the tofu binary
+    // getInspector checked: aqua may select another version in tfDir.
+    return { args: ["show", `-module=${tfDir}`, "-json"], cwd: gitRootDir };
+  }
+  return { args: ["--json"], cwd: path.join(gitRootDir, tfDir) };
 };
 
 /**

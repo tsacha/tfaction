@@ -198,7 +198,7 @@ exec:
 
         {{link}} | [document](https://suzuki-shunsuke.github.io/tfaction/docs/unreleased/detect-module-dependency)
 
-        Failed to resolve module dependencies using [terraform-config-inspect](https://github.com/hashicorp/terraform-config-inspect), or `tofu show -module` with OpenTofu 1.11 or later.
+        Failed to resolve module dependencies using [terraform-config-inspect](https://github.com/hashicorp/terraform-config-inspect) or [tofu show -module](https://opentofu.org/docs/cli/commands/show/).
 
         {{join_command}}
 
